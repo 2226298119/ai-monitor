@@ -220,7 +220,7 @@ def main():
 
     print()
     if not failed and not slow:
-        print("✅ 全部正常，不推送")
+        print("✅ 访问全部正常，不推送")
         sys.exit(0)
 
     # 组装告警
