@@ -150,15 +150,17 @@ def push_serverchan(title, content):
 def push_email(subject, content):
     if not all([NOTIFY_EMAIL, QQ_AUTH_CODE, EMAIL_SENDER]):
         return
+    # 支持逗号分隔多个收件人
+    recipients = [r.strip() for r in NOTIFY_EMAIL.split(",") if r.strip()]
     try:
         msg = MIMEText(content, "plain", "utf-8")
         msg["Subject"] = subject
         msg["From"] = EMAIL_SENDER
-        msg["To"] = NOTIFY_EMAIL
+        msg["To"] = ", ".join(recipients)
         with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
             s.login(EMAIL_SENDER, QQ_AUTH_CODE)
-            s.sendmail(EMAIL_SENDER, [NOTIFY_EMAIL], msg.as_string())
-        print("[邮件] 推送成功")
+            s.sendmail(EMAIL_SENDER, recipients, msg.as_string())
+        print(f"[邮件] 推送成功 → {len(recipients)}人")
     except Exception as e:
         print(f"[邮件] 推送失败: {e}")
 
