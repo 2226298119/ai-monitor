@@ -1,30 +1,25 @@
 name: ERP 健康检测
-
 on:
   schedule:
     # 北京 09:00-21:00 = UTC 01:00-13:00，周一到周六，每10分钟
     - cron: '0,10,20,30,40,50 1-13 * * 1-6'
   workflow_dispatch:  # 保留手动触发，方便随时测试
-
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 2
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - run: pip install requests
-
       - name: 执行检测
         env:
           ERP_USERNAME:    ${{ secrets.ERP_USERNAME }}
           ERP_PASSWORD:    ${{ secrets.ERP_PASSWORD }}
+          WECOM_WEBHOOK:   ${{ secrets.WECOM_WEBHOOK }}
           SERVERCHAN_KEY:  ${{ secrets.SERVERCHAN_KEY }}
           NOTIFY_EMAIL:    ${{ secrets.NOTIFY_EMAIL }}
           QQ_AUTH_CODE:    ${{ secrets.QQ_AUTH_CODE }}
@@ -32,4 +27,3 @@ jobs:
           SLOW_MS:         "5000"
           TIMEOUT:         "8"
         run: python monitor.py
-
