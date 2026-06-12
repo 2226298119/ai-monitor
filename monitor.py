@@ -10,6 +10,7 @@ monitor.py — erp.bjjcz.cn 健康检测
 环境变量：
   ERP_USERNAME      登录账号
   ERP_PASSWORD      登录密码
+  WECOM_WEBHOOK     企业微信群机器人 Webhook
   SERVERCHAN_KEY    Server酱 SendKey（微信通知），留空不推送
   NOTIFY_EMAIL      收件邮箱，留空不发邮件
   QQ_AUTH_CODE      QQ邮箱授权码
@@ -34,6 +35,7 @@ SLOW_MS   = int(os.environ.get("SLOW_MS", "5000"))
 
 USERNAME       = os.environ.get("ERP_USERNAME", "")
 PASSWORD       = os.environ.get("ERP_PASSWORD", "")
+WECOM_WEBHOOK  = os.environ.get("WECOM_WEBHOOK", "")
 SERVERCHAN_KEY = os.environ.get("SERVERCHAN_KEY", "")
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "")
 QQ_AUTH_CODE   = os.environ.get("QQ_AUTH_CODE", "")
@@ -133,6 +135,59 @@ def logout(token):
 
 # ── 推送 ──────────────────────────────────────────────────────
 
+def push_wecom(is_ok, results, now_str):
+    """企业微信群机器人推送，成功绿色卡片，失败红色卡片"""
+    if not WECOM_WEBHOOK:
+        return
+
+    if is_ok:
+        # 正常：绿色简洁卡片
+        avg_ms = int(sum(r["ms"] for r in results if r["ms"] > 0) / max(len([r for r in results if r["ms"] > 0]), 1))
+        content = (
+            f'<font color="info">✅ ERP服务正常</font>\n'
+            f'> 检测时间：{now_str}\n'
+            f'> 地址：{BASE_URL}\n'
+            f'> 连通层：{"✅" if results[0]["ok"] else "❌"} {results[0]["ms"]}ms\n'
+            f'> 页面层：{"✅" if results[1]["ok"] else "❌"} {results[1]["ms"]}ms\n'
+            f'> 登录层：{"✅" if results[2]["ok"] else "❌"} {results[2]["ms"]}ms\n'
+            f'> 业务层：{"✅" if results[3]["ok"] else "❌"} {results[3]["ms"]}ms\n'
+            f'> 平均响应：**{avg_ms}ms**'
+        )
+    else:
+        # 异常：红色告警卡片
+        failed = [r for r in results if not r["ok"] and "跳过" not in r["detail"]]
+        failed_names = " + ".join(r["layer"] for r in failed)
+        lines = [
+            f'<font color="warning">🔴 ERP服务异常 | {failed_names}</font>',
+            f'> 检测时间：{now_str}',
+            f'> 地址：{BASE_URL}',
+        ]
+        for r in results:
+            if "跳过" in r["detail"]:
+                icon = "⏭"
+            elif r["ok"]:
+                icon = "✅"
+            else:
+                icon = '<font color="warning">❌</font>'
+            ms_str = f'{r["ms"]}ms' if r["ms"] > 0 else "-"
+            lines.append(f'> {icon} **{r["layer"]}**：{r["detail"]} ({ms_str})')
+        content = "\n".join(lines)
+
+    try:
+        resp = requests.post(
+            WECOM_WEBHOOK,
+            json={
+                "msgtype": "markdown",
+                "markdown": {"content": content}
+            },
+            timeout=10,
+        )
+        result = resp.json()
+        print(f"[企业微信] {'成功' if result.get('errcode') == 0 else f'失败: {result}'}")
+    except Exception as e:
+        print(f"[企业微信] 推送失败: {e}")
+
+
 def push_serverchan(title, content):
     if not SERVERCHAN_KEY:
         return
@@ -150,7 +205,6 @@ def push_serverchan(title, content):
 def push_email(subject, content):
     if not all([NOTIFY_EMAIL, QQ_AUTH_CODE, EMAIL_SENDER]):
         return
-    # 支持逗号分隔多个收件人
     recipients = [r.strip() for r in NOTIFY_EMAIL.split(",") if r.strip()]
     try:
         msg = MIMEText(content, "plain", "utf-8")
@@ -163,11 +217,6 @@ def push_email(subject, content):
         print(f"[邮件] 推送成功 → {len(recipients)}人")
     except Exception as e:
         print(f"[邮件] 推送失败: {e}")
-
-
-def do_notify(title, content):
-    push_serverchan(title, content)
-    push_email(title, content)
 
 
 # ── 主逻辑 ────────────────────────────────────────────────────
@@ -186,10 +235,9 @@ def main():
     # 第一层：连通
     r1 = check_connectivity()
     results.append(r1)
-    print(f"[{r1['layer']}]  {'✅' if r1['ok'] else '❌'}  {r1['detail']}  ({r1['ms']}ms)" )
+    print(f"[{r1['layer']}]  {'✅' if r1['ok'] else '❌'}  {r1['detail']}  ({r1['ms']}ms)")
 
     if not r1["ok"]:
-        # 连通失败，后面没必要测了
         for layer in ["页面层", "登录层", "业务层"]:
             results.append({"layer": layer, "ok": False, "ms": -1, "detail": "跳过（连通层失败）"})
             print(f"[{layer}]  ⏭  跳过（连通层失败）")
@@ -217,30 +265,32 @@ def main():
 
     failed = [r for r in results if not r["ok"] and "跳过" not in r["detail"]]
     slow   = [r for r in results if r["ok"] and r["ms"] > SLOW_MS]
+    is_ok  = not failed and not slow
 
     print()
-    if not failed and not slow:
-        print("✅ 访问全部正常，不推送")
-        sys.exit(0)
+    print("✅ 全部正常" if is_ok else f"❌ 异常: {' + '.join(r['layer'] for r in failed)}")
 
-    # 组装告警
-    if failed:
-        names = " + ".join(r["layer"] for r in failed)
-        title = f"🔴 ERP告警 | {names} 异常"
-    else:
-        names = " + ".join(r["layer"] for r in slow)
-        title = f"⚠️ ERP响应慢 | {names} 超过{SLOW_MS}ms"
+    # 企业微信每次都发（成功和失败样式不同）
+    push_wecom(is_ok, results, now_str)
 
-    lines = [f"时间: {now_str}", f"地址: {BASE_URL}", "", "各层检测结果:"]
-    for r in results:
-        icon = "✅" if r["ok"] else ("⏭" if "跳过" in r["detail"] else "❌")
-        ms_str = f"{r['ms']}ms" if r["ms"] > 0 else "-"
-        lines.append(f"  {icon} {r['layer']}: {r['detail']} ({ms_str})")
+    # 邮件和 Server酱 只在异常时发
+    if not is_ok:
+        lines = [f"时间: {now_str}", f"地址: {BASE_URL}", "", "各层检测结果:"]
+        for r in results:
+            icon = "✅" if r["ok"] else ("⏭" if "跳过" in r["detail"] else "❌")
+            ms_str = f"{r['ms']}ms" if r["ms"] > 0 else "-"
+            lines.append(f"  {icon} {r['layer']}: {r['detail']} ({ms_str})")
+        content = "\n".join(lines)
 
-    content = "\n".join(lines)
-    print(title)
-    do_notify(title, content)
-    sys.exit(1 if failed else 0)
+        if failed:
+            title = f"🔴 ERP告警 | {' + '.join(r['layer'] for r in failed)} 异常"
+        else:
+            title = f"⚠️ ERP响应慢 | 超过{SLOW_MS}ms"
+
+        push_serverchan(title, content)
+        push_email(title, content)
+
+    sys.exit(0 if is_ok else 1)
 
 
 if __name__ == "__main__":
